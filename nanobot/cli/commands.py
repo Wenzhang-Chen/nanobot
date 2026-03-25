@@ -33,6 +33,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nanobot import __logo__, __version__
+from nanobot.cli.oauth import is_running_in_docker, login_oauth_interactive_for_container
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
@@ -1182,6 +1183,7 @@ def provider_login(
 def _login_openai_codex() -> None:
     try:
         from oauth_cli_kit import get_token, login_oauth_interactive
+        from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER
         token = None
         try:
             token = get_token()
@@ -1189,10 +1191,17 @@ def _login_openai_codex() -> None:
             pass
         if not (token and token.access):
             console.print("[cyan]Starting interactive OAuth login...[/cyan]\n")
-            token = login_oauth_interactive(
-                print_fn=lambda s: console.print(s),
-                prompt_fn=lambda s: typer.prompt(s),
-            )
+            login_kwargs = {
+                "print_fn": lambda s: console.print(s),
+                "prompt_fn": lambda s: typer.prompt(s),
+            }
+            if is_running_in_docker():
+                token = login_oauth_interactive_for_container(
+                    provider=OPENAI_CODEX_PROVIDER,
+                    **login_kwargs,
+                )
+            else:
+                token = login_oauth_interactive(**login_kwargs)
         if not (token and token.access):
             console.print("[red]✗ Authentication failed[/red]")
             raise typer.Exit(1)

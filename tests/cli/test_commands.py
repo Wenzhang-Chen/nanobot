@@ -1,5 +1,7 @@
 import json
 import re
+import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -320,6 +322,75 @@ def test_openai_compat_provider_passes_model_through():
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+def _install_fake_oauth_cli_kit(monkeypatch, *, get_token_result, interactive_impl):
+    oauth_module = types.ModuleType("oauth_cli_kit")
+    oauth_module.__path__ = []
+    oauth_module.get_token = lambda: get_token_result
+    oauth_module.login_oauth_interactive = interactive_impl
+
+    providers_module = types.ModuleType("oauth_cli_kit.providers")
+    oauth_module.providers = providers_module
+    providers_module.OPENAI_CODEX_PROVIDER = object()
+
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", oauth_module)
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit.providers", providers_module)
+    return providers_module.OPENAI_CODEX_PROVIDER
+
+
+def test_openai_codex_login_uses_upstream_flow_outside_docker(monkeypatch):
+    token = types.SimpleNamespace(access="token", account_id="acct-local")
+    interactive_calls = []
+
+    _install_fake_oauth_cli_kit(
+        monkeypatch,
+        get_token_result=None,
+        interactive_impl=lambda **kwargs: interactive_calls.append(kwargs) or token,
+    )
+
+    docker_calls = []
+    monkeypatch.setattr("nanobot.cli.commands.is_running_in_docker", lambda: False)
+    monkeypatch.setattr(
+        "nanobot.cli.commands.login_oauth_interactive_for_container",
+        lambda **kwargs: docker_calls.append(kwargs),
+    )
+
+    from nanobot.cli.commands import _login_openai_codex
+
+    _login_openai_codex()
+
+    assert len(interactive_calls) == 1
+    assert callable(interactive_calls[0]["print_fn"])
+    assert callable(interactive_calls[0]["prompt_fn"])
+    assert docker_calls == []
+
+
+def test_openai_codex_login_uses_container_flow_inside_docker(monkeypatch):
+    token = types.SimpleNamespace(access="token", account_id="acct-docker")
+    interactive_calls = []
+    provider_obj = _install_fake_oauth_cli_kit(
+        monkeypatch,
+        get_token_result=None,
+        interactive_impl=lambda **kwargs: interactive_calls.append(kwargs) or token,
+    )
+
+    docker_calls = []
+    monkeypatch.setattr("nanobot.cli.commands.is_running_in_docker", lambda: True)
+    monkeypatch.setattr(
+        "nanobot.cli.commands.login_oauth_interactive_for_container",
+        lambda **kwargs: docker_calls.append(kwargs) or token,
+    )
+
+    from nanobot.cli.commands import _login_openai_codex
+
+    _login_openai_codex()
+
+    assert interactive_calls == []
+    assert len(docker_calls) == 1
+    assert docker_calls[0]["provider"] is provider_obj
+    assert callable(docker_calls[0]["print_fn"])
+    assert callable(docker_calls[0]["prompt_fn"])
 
 
 def test_make_provider_passes_extra_headers_to_custom_provider():
